@@ -15,14 +15,9 @@ import (
 )
 
 const (
-	ErrorColor       = "\033[1;31m%s\033[0m\n"
-	GitUrl           = "https://github.com/login"
-
-	workingDirectory = "/Users/your/work/space/src/"
-	Username         = "USERNAME"
-	Password         = "PASSWORD"
-	GoLand = "/usr/local/bin/goland" //need to create a command with Intellj - GoLand OR use your favourite IDE :)
+	ErrorColor = "\033[1;31m%s\033[0m\n"
 )
+
 func askPermission(path, repo string) error {
 	//Check if directory already exists
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -45,10 +40,10 @@ func askPermission(path, repo string) error {
 	// time out
 	case <-timer.C:
 		return fmt.Errorf(ErrorColor, "No answer. Time out")
-		//revieved an answer
 	case answer := <-answerCh:
 		answer = strings.ToLower(answer)
 		if "y" == answer {
+			clear()
 			return nil
 		} else if "n" == answer {
 			return errors.New("")
@@ -58,6 +53,7 @@ func askPermission(path, repo string) error {
 }
 
 func main() {
+	clear()
 	//Checks if git is installed ?
 	if _, err := exec.LookPath("git"); err != nil {
 		fmt.Printf(ErrorColor, "Git $Path not found")
@@ -71,11 +67,11 @@ func main() {
 	}
 	repo := strings.Join(input, " ")
 
-	absolutePath := path.Join(path.Dir(workingDirectory), repo)
+	config := GetConfig()
+	absolutePath := path.Join(path.Dir(config.WorkingDirectory), repo)
 	err := askPermission(absolutePath, repo)
 	if err != nil {
 		log.Fatal(err)
-		os.Exit(0)
 	}
 
 	var wg sync.WaitGroup
@@ -106,50 +102,52 @@ func main() {
 		<-done
 		clear()
 		//Init Git Repository and add remote
-		c := NewCommander()
+		c := NewCommander(config)
 		clear()
 		if err := c.gitInit(); err != nil {
 			fmt.Println(err)
 			return
 		}
 
-		if err := c.openIDE();err !=nil{
+		if err := c.openIDE(); err != nil {
 			log.Println(err)
 		}
 	}()
 
-	time.Sleep(1*time.Second)
-	createRepo(repo, done)
+	err = createRepo(config, repo, done)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	wg.Wait()
 	fmt.Println("Done")
 }
 
 //Creates a Repository on Github using GoogleChrome
-func createRepo(repo string, ch chan<- bool) error {
+func createRepo(c *config, repo string, ch chan<- bool) error {
 	// create context
 	ctxt, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	c, err := chromedp.New(ctxt, chromedp.WithLog(log.Printf))
+	cdp, err := chromedp.New(ctxt, chromedp.WithLog(log.Printf))
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	// run task list
-	var res string
-	err = c.Run(ctxt, gitHub(Username, Password, repo, &res))
+	err = cdp.Run(ctxt, gitHub(c, repo))
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 
 	// shutdown chrome
-	err = c.Shutdown(ctxt)
+	err = cdp.Shutdown(ctxt)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	// wait for chrome to finish
-	err = c.Wait()
+	err = cdp.Wait()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -158,41 +156,42 @@ func createRepo(repo string, ch chan<- bool) error {
 	return nil
 }
 
-func gitHub(u, p, repo string, res *string) chromedp.Tasks {
+func gitHub(c *config, repo string) chromedp.Tasks {
 	return chromedp.Tasks{
-		chromedp.Navigate(GitUrl),
+		chromedp.Navigate(c.GitUrl + "/login"),
 		chromedp.Sleep(2 * time.Second),
 		//Fill Username, Password and Sign In
 		chromedp.WaitVisible(`#login_field`, chromedp.ByID),
-		chromedp.SendKeys(`#login_field`, u, chromedp.ByID),
-		chromedp.SendKeys(`#password`, p, chromedp.ByID),
-		chromedp.Click(`input[name="commit"]`, chromedp.ByQuery),
-
-		// Create new Repository
-		chromedp.WaitVisible(`a[class="btn btn-sm btn-primary text-white"]`, chromedp.ByQuery),
-		chromedp.Click(`a[class="btn btn-sm btn-primary text-white"]`, chromedp.ByQuery),
-		//chromedp.Navigate("https://github.com/new"),
-		chromedp.WaitVisible(`#new_repository`, chromedp.ByID),
-		chromedp.SendKeys(`#repository_name`, repo, chromedp.ByID),
-		//chromedp.Sleep(1*time.Second),
-		chromedp.WaitEnabled(`button[class="btn btn-primary first-in-line"]`, chromedp.ByQuery),
-		chromedp.Click(`button[class="btn btn-primary first-in-line"]`, chromedp.ByQuery),
-
-
-		//Copy remote address
-		chromedp.WaitVisible(`clipboard-copy[for="empty-setup-push-repo-echo"]`, chromedp.ByQuery),
-		chromedp.Click(`clipboard-copy[for="empty-setup-push-repo-echo"]`, chromedp.ByQuery),
+		chromedp.SendKeys(`#login_field`, c.Username, chromedp.ByID),
+		chromedp.SendKeys(`#password`, c.Password, chromedp.ByID),
+		//chromedp.Click(`input[type="submit"]`, chromedp.NodeVisible),
+		chromedp.Click(`input[value="Sign in"]`, chromedp.BySearch),
+		chromedp.Sleep(3 * time.Second),
+		//chromedp.Sleep(5 * time.Second),
+		chromedp.Navigate(c.GitUrl + "/new"),
+		//// Create new Repository
+		//chromedp.WaitVisible(`#new_repository`, chromedp.ByID),
+		//chromedp.SendKeys(`#repository_name`, repo, chromedp.ByID),
+		////chromedp.Sleep(1*time.Second),
+		//chromedp.WaitEnabled(`button[class="btn btn-primary first-in-line"]`, chromedp.ByQuery),
+		//chromedp.Click(`button[class="btn btn-primary first-in-line"]`, chromedp.ByQuery),
+		//
+		//
+		//////Copy remote address
+		//chromedp.WaitVisible(`clipboard-copy[for="empty-setup-push-repo-echo"]`, chromedp.ByQuery),
+		//chromedp.Click(`clipboard-copy[for="empty-setup-push-repo-echo"]`, chromedp.ByQuery),
 	}
 }
 
 //-------------------------------Commander------------
 
 type Commander struct {
-	cmd *exec.Cmd
+	cmd    *exec.Cmd
+	config *config
 }
 
-func NewCommander() Commander {
-	c := Commander{}
+func NewCommander(config *config) Commander {
+	c := Commander{config: config}
 	return c
 }
 
@@ -211,8 +210,9 @@ func (c *Commander) gitInit() error {
 	return nil
 }
 
+//opens the repo with your given IDE
 func (c *Commander) openIDE() error {
-	c.cmd = exec.Command(GoLand, ".")
+	c.cmd = exec.Command(c.config.IDE, ".")
 	c.cmd.Stdin, c.cmd.Stdout, c.cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := c.cmd.Run(); err != nil {
 		return errors.New("unable to openIDE directory with your Editor")
@@ -221,7 +221,7 @@ func (c *Commander) openIDE() error {
 	return nil
 }
 
-//Adds the copied remote server and pushes to master
+//Adds the copied remote server and push to master
 func (c *Commander) addRemote() error {
 	var remote []string
 	var err error
@@ -229,7 +229,7 @@ func (c *Commander) addRemote() error {
 		return err
 	}
 
-	c.cmd = exec.Command("git",remote...)
+	c.cmd = exec.Command("git", remote...)
 	c.cmd.Stdin, c.cmd.Stdout, c.cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err = c.cmd.Run(); err != nil {
 		return err
@@ -246,12 +246,13 @@ func (c *Commander) pasteCopy() ([]string, error) {
 		return nil, err
 	}
 
-	split := strings.Split(string(out),"\n")
-	rm := strings.Split(split[0]," ")
-	return rm[1:5],nil
+	split := strings.Split(string(out), "\n")
+	rm := strings.Split(split[0], " ")
+	return rm[1:5], nil
 }
 
-func clear(){
+//clear the Terminal
+func clear() {
 	cmd := exec.Command("clear")
 
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
